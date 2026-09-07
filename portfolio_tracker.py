@@ -1,13 +1,11 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import sqlite3
 from datetime import datetime
 
 # =========================================================
 # CONFIG
 # =========================================================
-DB_FILE = "portfolio.db"
 STARTING_CAPITAL = 700_000.00
 QUOTE_TTL_SECONDS = 900  # 15-minute delayed quotes are fine -> also used as cache lifetime
 FEE_RATE = 0.002  # 0.2% brokerage/other cost, applied on both BUY and SELL trade value
@@ -112,29 +110,43 @@ SORTED_DISPLAY_LABELS = sorted(SEARCH_MAP.keys())
 
 
 # =========================================================
-# 2. DATABASE LAYER
+# 2. DATABASE LAYER (Turso — hosted, SQLite-compatible, free tier)
 # =========================================================
+import libsql
+
+try:
+    TURSO_URL = st.secrets["TURSO_DATABASE_URL"]
+    TURSO_TOKEN = st.secrets["TURSO_AUTH_TOKEN"]
+except Exception:
+    st.error(
+        "Turso credentials not found. Add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN "
+        "under Settings → Secrets in the Streamlit Cloud dashboard (or in a local "
+        ".streamlit/secrets.toml for local testing)."
+    )
+    st.stop()
+
+
+@st.cache_resource(show_spinner=False)
 def get_conn():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
+    return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
 
 
 def init_db():
     conn = get_conn()
-    c = conn.cursor()
-    c.execute('''
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS account (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             cash_balance REAL NOT NULL
         )
     ''')
-    c.execute('''
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS holdings (
             ticker TEXT PRIMARY KEY,
             units INTEGER NOT NULL,
             avg_cost REAL NOT NULL
         )
     ''')
-    c.execute('''
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -148,61 +160,58 @@ def init_db():
         )
     ''')
     # Migration: older DBs created before the fee column existed
-    existing_cols = [row[1] for row in c.execute("PRAGMA table_info(trades)").fetchall()]
-    if "fee" not in existing_cols:
-        c.execute("ALTER TABLE trades ADD COLUMN fee REAL DEFAULT 0")
-    c.execute("SELECT COUNT(*) FROM account")
-    if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO account (id, cash_balance) VALUES (1, ?)", (STARTING_CAPITAL,))
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN fee REAL DEFAULT 0")
+    except Exception:
+        pass  # column already exists
+    row = conn.execute("SELECT COUNT(*) FROM account").fetchone()
+    if row[0] == 0:
+        conn.execute("INSERT INTO account (id, cash_balance) VALUES (1, ?)", (STARTING_CAPITAL,))
     conn.commit()
-    conn.close()
 
 
 def get_cash():
     conn = get_conn()
-    val = pd.read_sql_query("SELECT cash_balance FROM account WHERE id = 1", conn).iloc[0, 0]
-    conn.close()
-    return float(val)
+    row = conn.execute("SELECT cash_balance FROM account WHERE id = 1").fetchone()
+    return float(row[0])
 
 
 def set_cash(new_balance):
     conn = get_conn()
     conn.execute("UPDATE account SET cash_balance = ? WHERE id = 1", (new_balance,))
     conn.commit()
-    conn.close()
 
 
 def get_holdings_df():
     conn = get_conn()
-    df = pd.read_sql_query("SELECT * FROM holdings", conn)
-    conn.close()
-    return df
+    rows = conn.execute("SELECT ticker, units, avg_cost FROM holdings").fetchall()
+    return pd.DataFrame(rows, columns=["ticker", "units", "avg_cost"])
 
 
 def get_holding(ticker):
     conn = get_conn()
-    df = pd.read_sql_query("SELECT * FROM holdings WHERE ticker = ?", conn, params=(ticker,))
-    conn.close()
-    return None if df.empty else df.iloc[0]
+    row = conn.execute(
+        "SELECT ticker, units, avg_cost FROM holdings WHERE ticker = ?", (ticker,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {"ticker": row[0], "units": row[1], "avg_cost": row[2]}
 
 
 def upsert_holding(ticker, units, avg_cost):
     conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT ticker FROM holdings WHERE ticker = ?", (ticker,))
-    if c.fetchone() is None:
-        c.execute("INSERT INTO holdings (ticker, units, avg_cost) VALUES (?, ?, ?)", (ticker, units, avg_cost))
+    existing = conn.execute("SELECT ticker FROM holdings WHERE ticker = ?", (ticker,)).fetchone()
+    if existing is None:
+        conn.execute("INSERT INTO holdings (ticker, units, avg_cost) VALUES (?, ?, ?)", (ticker, units, avg_cost))
     else:
-        c.execute("UPDATE holdings SET units = ?, avg_cost = ? WHERE ticker = ?", (units, avg_cost, ticker))
+        conn.execute("UPDATE holdings SET units = ?, avg_cost = ? WHERE ticker = ?", (units, avg_cost, ticker))
     conn.commit()
-    conn.close()
 
 
 def remove_holding(ticker):
     conn = get_conn()
     conn.execute("DELETE FROM holdings WHERE ticker = ?", (ticker,))
     conn.commit()
-    conn.close()
 
 
 def log_trade(ticker, action, price, units, amount, fee=0.0, realized_pnl=None):
@@ -213,24 +222,25 @@ def log_trade(ticker, action, price, units, amount, fee=0.0, realized_pnl=None):
         (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ticker, action, price, units, amount, fee, realized_pnl)
     )
     conn.commit()
-    conn.close()
 
 
 def get_trades_df():
     conn = get_conn()
-    df = pd.read_sql_query("SELECT * FROM trades ORDER BY id DESC", conn)
-    conn.close()
-    return df
+    rows = conn.execute(
+        "SELECT id, timestamp, ticker, action, price, units, amount, fee, realized_pnl "
+        "FROM trades ORDER BY id DESC"
+    ).fetchall()
+    return pd.DataFrame(rows, columns=[
+        "id", "timestamp", "ticker", "action", "price", "units", "amount", "fee", "realized_pnl"
+    ])
 
 
 def reset_portfolio():
     conn = get_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM holdings")
-    c.execute("DELETE FROM trades")
-    c.execute("UPDATE account SET cash_balance = ? WHERE id = 1", (STARTING_CAPITAL,))
+    conn.execute("DELETE FROM holdings")
+    conn.execute("DELETE FROM trades")
+    conn.execute("UPDATE account SET cash_balance = ? WHERE id = 1", (STARTING_CAPITAL,))
     conn.commit()
-    conn.close()
     fetch_prices.clear()
 
 
