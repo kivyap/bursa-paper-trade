@@ -345,7 +345,10 @@ stock_name = NAME_MAP[selected_ticker]
 current_holding = get_holding(selected_ticker)
 held_units = 0 if current_holding is None else int(current_holding['units'])
 if current_holding is not None:
-    st.sidebar.caption(f"Currently holding: {held_units:,} units @ avg MYR {current_holding['avg_cost']:.3f}")
+    st.sidebar.caption(
+        f"Currently holding: {held_units:,} units @ avg MYR {current_holding['avg_cost']:,.3f} "
+        f"(fee-inclusive cost basis)"
+    )
 else:
     st.sidebar.caption("No current position in this stock.")
 
@@ -361,6 +364,29 @@ price = st.sidebar.number_input(
     f"Price for {stock_name} (MYR):", min_value=0.001, value=float(default_price), step=0.005, format="%.3f"
 )
 units = st.sidebar.number_input("Units:", min_value=1, value=100, step=100)
+st.sidebar.caption(f"= {units:,} units")
+
+# --- Live order preview (gross value, fee, net cost/proceeds) before committing ---
+gross_value = price * units
+fee_value = gross_value * FEE_RATE
+
+preview_lines = [f"**Gross Value:** MYR {gross_value:,.2f}", f"**Est. Fee ({FEE_RATE * 100:.2f}%):** MYR {fee_value:,.2f}"]
+if trade_action == "BUY":
+    total_cost_preview = gross_value + fee_value
+    preview_lines.append(f"**Total Cost:** MYR {total_cost_preview:,.2f}")
+    if total_cost_preview > get_cash():
+        preview_lines.append(f":red[Exceeds available cash of MYR {get_cash():,.2f}]")
+else:
+    net_proceeds_preview = gross_value - fee_value
+    preview_lines.append(f"**Net Proceeds:** MYR {net_proceeds_preview:,.2f}")
+    if current_holding is not None:
+        est_pnl = net_proceeds_preview - (current_holding['avg_cost'] * units)
+        pnl_tag = "green" if est_pnl >= 0 else "red"
+        preview_lines.append(f"**Est. Realized P&L:** :{pnl_tag}[MYR {est_pnl:,.2f}]")
+    if units > held_units:
+        preview_lines.append(f":red[Exceeds units held ({held_units:,})]")
+
+st.sidebar.markdown("  \n".join(preview_lines))
 
 if st.sidebar.button("✅ Execute Trade", type="primary"):
     if trade_action == "BUY":
