@@ -343,6 +343,14 @@ if "fetched_price" not in st.session_state:
 # --- Sidebar: place a trade ---
 st.sidebar.header("📝 Place a Trade")
 
+# Visible confirmation that the app is actually talking to Turso, not a local file
+try:
+    get_conn().execute("SELECT 1").fetchone()
+    db_host = TURSO_URL.replace("libsql://", "").split(".turso.io")[0]
+    st.sidebar.caption(f"🟢 Connected to Turso: `{db_host}`")
+except Exception as e:
+    st.sidebar.caption(f"🔴 Turso connection failed: {e}")
+
 selected_display = st.sidebar.selectbox(
     "Search Stock (Code or Name):",
     options=SORTED_DISPLAY_LABELS,
