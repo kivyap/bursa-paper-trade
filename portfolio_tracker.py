@@ -10,6 +10,7 @@ from datetime import datetime
 DB_FILE = "portfolio.db"
 STARTING_CAPITAL = 700_000.00
 QUOTE_TTL_SECONDS = 900  # 15-minute delayed quotes are fine -> also used as cache lifetime
+FEE_RATE = 0.002  # 0.2% brokerage/other cost, applied on both BUY and SELL trade value
 
 # =========================================================
 # 1. EMBEDDED BURSA STOCK POOL (160+ STOCKS)
@@ -142,9 +143,14 @@ def init_db():
             price REAL NOT NULL,
             units INTEGER NOT NULL,
             amount REAL NOT NULL,
+            fee REAL DEFAULT 0,
             realized_pnl REAL
         )
     ''')
+    # Migration: older DBs created before the fee column existed
+    existing_cols = [row[1] for row in c.execute("PRAGMA table_info(trades)").fetchall()]
+    if "fee" not in existing_cols:
+        c.execute("ALTER TABLE trades ADD COLUMN fee REAL DEFAULT 0")
     c.execute("SELECT COUNT(*) FROM account")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO account (id, cash_balance) VALUES (1, ?)", (STARTING_CAPITAL,))
@@ -199,12 +205,12 @@ def remove_holding(ticker):
     conn.close()
 
 
-def log_trade(ticker, action, price, units, amount, realized_pnl=None):
+def log_trade(ticker, action, price, units, amount, fee=0.0, realized_pnl=None):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO trades (timestamp, ticker, action, price, units, amount, realized_pnl) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ticker, action, price, units, amount, realized_pnl)
+        "INSERT INTO trades (timestamp, ticker, action, price, units, amount, fee, realized_pnl) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ticker, action, price, units, amount, fee, realized_pnl)
     )
     conn.commit()
     conn.close()
@@ -235,23 +241,28 @@ init_db()
 # 3. TRADE EXECUTION (BUY / SELL move cash + holdings together)
 # =========================================================
 def execute_buy(ticker, price, units):
-    cost = round(price * units, 2)
+    gross = round(price * units, 2)
+    fee = round(gross * FEE_RATE, 2)
+    total_cost = round(gross + fee, 2)
     cash = get_cash()
-    if cost > cash:
-        return False, f"Insufficient cash. Need MYR {cost:,.2f}, available MYR {cash:,.2f}."
+    if total_cost > cash:
+        return False, (f"Insufficient cash. Need MYR {total_cost:,.2f} "
+                        f"(incl. MYR {fee:,.2f} fee), available MYR {cash:,.2f}.")
 
     existing = get_holding(ticker)
     if existing is not None:
         new_units = int(existing['units']) + units
-        new_avg_cost = (existing['units'] * existing['avg_cost'] + cost) / new_units
+        # fee is folded into cost basis, same as a real brokerage fill
+        new_avg_cost = (existing['units'] * existing['avg_cost'] + total_cost) / new_units
     else:
         new_units = units
-        new_avg_cost = price
+        new_avg_cost = total_cost / units
 
     upsert_holding(ticker, new_units, new_avg_cost)
-    set_cash(cash - cost)
-    log_trade(ticker, "BUY", price, units, cost)
-    return True, f"Bought {units:,} units of {ticker} @ MYR {price:.3f} (cost MYR {cost:,.2f})"
+    set_cash(cash - total_cost)
+    log_trade(ticker, "BUY", price, units, gross, fee=fee)
+    return True, (f"Bought {units:,} units of {ticker} @ MYR {price:,.3f} "
+                  f"(gross MYR {gross:,.2f} + fee MYR {fee:,.2f} = MYR {total_cost:,.2f})")
 
 
 def execute_sell(ticker, price, units):
@@ -260,8 +271,10 @@ def execute_sell(ticker, price, units):
     if units > held:
         return False, f"Cannot sell {units:,} units — only {held:,} held."
 
-    proceeds = round(price * units, 2)
-    realized_pnl = round((price - existing['avg_cost']) * units, 2)
+    gross = round(price * units, 2)
+    fee = round(gross * FEE_RATE, 2)
+    net_proceeds = round(gross - fee, 2)
+    realized_pnl = round(net_proceeds - (existing['avg_cost'] * units), 2)
     remaining_units = held - units
 
     if remaining_units == 0:
@@ -269,10 +282,12 @@ def execute_sell(ticker, price, units):
     else:
         upsert_holding(ticker, remaining_units, existing['avg_cost'])  # avg cost of remainder is unchanged
 
-    set_cash(get_cash() + proceeds)
-    log_trade(ticker, "SELL", price, units, proceeds, realized_pnl)
+    set_cash(get_cash() + net_proceeds)
+    log_trade(ticker, "SELL", price, units, gross, fee=fee, realized_pnl=realized_pnl)
     pnl_word = "profit" if realized_pnl >= 0 else "loss"
-    return True, f"Sold {units:,} units of {ticker} @ MYR {price:.3f} — realized {pnl_word} MYR {abs(realized_pnl):,.2f}"
+    return True, (f"Sold {units:,} units of {ticker} @ MYR {price:,.3f} "
+                  f"(gross MYR {gross:,.2f} − fee MYR {fee:,.2f} = MYR {net_proceeds:,.2f} net) "
+                  f"— realized {pnl_word} MYR {abs(realized_pnl):,.2f}")
 
 
 # =========================================================
@@ -304,7 +319,11 @@ def fetch_single_price(ticker: str):
 # =========================================================
 st.set_page_config(page_title="Bursa Paper Trading Tracker", layout="wide")
 st.title("💼 Bursa Malaysia Paper Trading Tracker")
-st.caption(f"Virtual capital: MYR {STARTING_CAPITAL:,.2f} · Quotes may be delayed up to {QUOTE_TTL_SECONDS // 60} min")
+st.caption(
+    f"Virtual capital: MYR {STARTING_CAPITAL:,.2f} · "
+    f"Quotes may be delayed up to {QUOTE_TTL_SECONDS // 60} min · "
+    f"Brokerage/other cost: {FEE_RATE * 100:.2f}% per trade (buy & sell)"
+)
 
 if "trade_msg" not in st.session_state:
     st.session_state.trade_msg = None
@@ -398,36 +417,71 @@ total_pnl = total_portfolio_value - STARTING_CAPITAL
 total_roi = (total_pnl / STARTING_CAPITAL) * 100
 
 st.subheader("Portfolio Performance")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Portfolio Value", f"MYR {total_portfolio_value:,.2f}", f"{total_roi:+.2f}%")
-c2.metric("Cash Balance", f"MYR {cash_balance:,.2f}")
-c3.metric("Unrealized P&L", f"MYR {unrealized_total:,.2f}")
-c4.metric("Realized P&L", f"MYR {realized_total:,.2f}")
+
+
+def render_metric_card(col, label, value, delta=None, delta_color="#4caf50"):
+    delta_html = f'<div style="font-size:0.8rem;color:{delta_color};margin-top:2px;">{delta}</div>' if delta else ""
+    col.markdown(
+        f"""
+        <div style="background:rgba(255,255,255,0.03);border-radius:8px;padding:10px 12px;">
+            <div style="font-size:0.78rem;color:#9aa0a6;margin-bottom:4px;">{label}</div>
+            <div style="font-size:1.25rem;font-weight:600;line-height:1.25;
+                        white-space:normal;word-break:break-word;">{value}</div>
+            {delta_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+roi_color = "#4caf50" if total_roi >= 0 else "#e05252"
+row1_col1, row1_col2 = st.columns(2)
+render_metric_card(row1_col1, "Total Portfolio Value", f"MYR {total_portfolio_value:,.2f}",
+                    f"{total_roi:+.2f}%", roi_color)
+render_metric_card(row1_col2, "Cash Balance", f"MYR {cash_balance:,.2f}")
+
+row2_col1, row2_col2 = st.columns(2)
+render_metric_card(row2_col1, "Unrealized P&L", f"MYR {unrealized_total:,.2f}")
+render_metric_card(row2_col2, "Realized P&L", f"MYR {realized_total:,.2f}")
 
 st.divider()
 st.subheader("Current Holdings")
 if not df_holdings.empty:
-    st.dataframe(
-        df_holdings[[
-            "ticker", "Stock Name", "units", "avg_cost", "Current Price (MYR)",
-            "Market Value (MYR)", "Unrealized P&L (MYR)", "ROI (%)"
-        ]].rename(columns={"ticker": "Ticker", "units": "Units", "avg_cost": "Avg Cost (MYR)"}),
-        use_container_width=True,
-        hide_index=True,
-    )
+    display_holdings = df_holdings[[
+        "ticker", "Stock Name", "units", "avg_cost", "Current Price (MYR)",
+        "Market Value (MYR)", "Unrealized P&L (MYR)", "ROI (%)"
+    ]].rename(columns={"ticker": "Ticker", "units": "Units", "avg_cost": "Avg Cost (MYR)"}).copy()
+
+    display_holdings["Units"] = display_holdings["Units"].map(lambda x: f"{int(x):,}")
+    display_holdings["Avg Cost (MYR)"] = display_holdings["Avg Cost (MYR)"].map(lambda x: f"{x:,.3f}")
+    display_holdings["Current Price (MYR)"] = display_holdings["Current Price (MYR)"].map(lambda x: f"{x:,.3f}")
+    display_holdings["Market Value (MYR)"] = display_holdings["Market Value (MYR)"].map(lambda x: f"{x:,.2f}")
+    display_holdings["Unrealized P&L (MYR)"] = display_holdings["Unrealized P&L (MYR)"].map(lambda x: f"{x:,.2f}")
+    display_holdings["ROI (%)"] = display_holdings["ROI (%)"].map(lambda x: f"{x:,.2f}%")
+
+    st.dataframe(display_holdings, use_container_width=True, hide_index=True)
 else:
     st.info("No open positions yet. Use the sidebar to place your first BUY trade.")
 
 st.divider()
 st.subheader("Trade History")
 if not df_trades.empty:
-    st.dataframe(
-        df_trades[["timestamp", "ticker", "action", "price", "units", "amount", "realized_pnl"]].rename(columns={
-            "timestamp": "Time", "ticker": "Ticker", "action": "Action",
-            "price": "Price (MYR)", "units": "Units", "amount": "Amount (MYR)", "realized_pnl": "Realized P&L (MYR)"
-        }),
-        use_container_width=True,
-        hide_index=True,
+    display_trades = df_trades[[
+        "timestamp", "ticker", "action", "price", "units", "amount", "fee", "realized_pnl"
+    ]].rename(columns={
+        "timestamp": "Time", "ticker": "Ticker", "action": "Action", "price": "Price (MYR)",
+        "units": "Units", "amount": "Gross Amount (MYR)", "fee": "Fee (MYR)",
+        "realized_pnl": "Realized P&L (MYR)"
+    }).copy()
+
+    display_trades["Price (MYR)"] = display_trades["Price (MYR)"].map(lambda x: f"{x:,.3f}")
+    display_trades["Units"] = display_trades["Units"].map(lambda x: f"{int(x):,}")
+    display_trades["Gross Amount (MYR)"] = display_trades["Gross Amount (MYR)"].map(lambda x: f"{x:,.2f}")
+    display_trades["Fee (MYR)"] = display_trades["Fee (MYR)"].map(lambda x: f"{x:,.2f}")
+    display_trades["Realized P&L (MYR)"] = display_trades["Realized P&L (MYR)"].map(
+        lambda x: "-" if pd.isna(x) else f"{x:,.2f}"
     )
+
+    st.dataframe(display_trades, use_container_width=True, hide_index=True)
 else:
     st.info("No trades recorded yet.")
