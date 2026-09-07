@@ -2,6 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+MYT = ZoneInfo("Asia/Kuala_Lumpur")
 
 # =========================================================
 # CONFIG
@@ -219,7 +222,7 @@ def log_trade(ticker, action, price, units, amount, fee=0.0, realized_pnl=None):
     conn.execute(
         "INSERT INTO trades (timestamp, ticker, action, price, units, amount, fee, realized_pnl) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ticker, action, price, units, amount, fee, realized_pnl)
+        (datetime.now(MYT).strftime("%Y-%m-%d %H:%M:%S"), ticker, action, price, units, amount, fee, realized_pnl)
     )
     conn.commit()
 
@@ -510,10 +513,14 @@ else:
 st.divider()
 st.subheader("Trade History")
 if not df_trades.empty:
-    display_trades = df_trades[[
-        "timestamp", "ticker", "action", "price", "units", "amount", "fee", "realized_pnl"
+    trades_with_name = df_trades.copy()
+    trades_with_name["stock_name"] = trades_with_name["ticker"].map(NAME_MAP)
+
+    display_trades = trades_with_name[[
+        "timestamp", "ticker", "stock_name", "action", "price", "units", "amount", "fee", "realized_pnl"
     ]].rename(columns={
-        "timestamp": "Time", "ticker": "Ticker", "action": "Action", "price": "Price (MYR)",
+        "timestamp": "Time (MYT)", "ticker": "Ticker", "stock_name": "Stock Name",
+        "action": "Action", "price": "Price (MYR)",
         "units": "Units", "amount": "Gross Amount (MYR)", "fee": "Fee (MYR)",
         "realized_pnl": "Realized P&L (MYR)"
     }).copy()
