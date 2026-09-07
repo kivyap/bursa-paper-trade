@@ -112,7 +112,7 @@ SORTED_DISPLAY_LABELS = sorted(SEARCH_MAP.keys())
 # =========================================================
 # 2. DATABASE LAYER (Turso — hosted, SQLite-compatible, free tier)
 # =========================================================
-import libsql
+import turso_serverless
 
 try:
     TURSO_URL = st.secrets["TURSO_DATABASE_URL"]
@@ -128,7 +128,7 @@ except Exception:
 
 @st.cache_resource(show_spinner=False)
 def get_conn():
-    return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
+    return turso_serverless.connect(TURSO_URL, auth_token=TURSO_TOKEN)
 
 
 def init_db():
