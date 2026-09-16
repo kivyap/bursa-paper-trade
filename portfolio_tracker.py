@@ -70,7 +70,7 @@ STOCK_POOL = [
     {'Ticker': '0128.KL', 'Name': 'FRONTKN'},
     {'Ticker': '5212.KL', 'Name': 'PAVREIT'},
     {'Ticker': '0166.KL', 'Name': 'INARI'},
-    {'Ticker': '5340.KL', 'Name': 'UMSINT'},
+    {'Ticker': '1619.KL', 'Name': 'DRBHCOM'},
     {'Ticker': '5337.KL', 'Name': 'ECOSHOP'},
     {'Ticker': '3034.KL', 'Name': 'HAPSENG'},
     {'Ticker': '1818.KL', 'Name': 'BURSA'},
@@ -119,7 +119,7 @@ STOCK_POOL = [
     {'Ticker': '8583.KL', 'Name': 'MAHSING'},
     {'Ticker': '6633.KL', 'Name': 'LHI'},
     {'Ticker': '5243.KL', 'Name': 'VELESTO'},
-    {'Ticker': '5032.KL', 'Name': 'BIPORT'},
+    {'Ticker': '5235SS.KL', 'Name': 'KLCC'},
     {'Ticker': '5027.KL', 'Name': 'KMLOONG'},
     {'Ticker': '5236.KL', 'Name': 'MATRIX'},
     {'Ticker': '5272.KL', 'Name': 'RANHILL'},
@@ -185,7 +185,7 @@ STOCK_POOL = [
     {'Ticker': '1929.KL', 'Name': 'CHINTEK'},
     {'Ticker': '7233.KL', 'Name': 'DUFU'},
     {'Ticker': '5293.KL', 'Name': 'AME'},
-    {'Ticker': '5348.KL', 'Name': 'ORKIM'},
+    {'Ticker': '1287.KL', 'Name': 'EXSIMHB'},
     {'Ticker': '5352.KL', 'Name': 'MTTSL'},
     {'Ticker': '5351.KL', 'Name': 'EMPIRE'},
     {'Ticker': '5357.KL', 'Name': 'SKYECHIP'},
@@ -194,6 +194,7 @@ STOCK_POOL = [
     {'Ticker': '0168.KL', 'Name': 'BMGREEN'},
     {'Ticker': '5555.KL', 'Name': 'SUNMED'},
     {'Ticker': '5356.KL', 'Name': 'STRATUS'}
+
 ]
 
 SEARCH_MAP = {f"{item['Ticker']} - {item['Name']}": item['Ticker'] for item in STOCK_POOL}
